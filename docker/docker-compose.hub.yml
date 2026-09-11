@@ -1,0 +1,16 @@
+services:
+  paywatch:
+    image: ${DOCKERHUB_USERNAME:-dwiriyant}/paywatch:${PAYWATCH_TAG:-latest}
+    environment:
+      ADDR: ":8081"
+      DATABASE_URL: ${DATABASE_URL}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      QRISGATE_BASE_URL: ${QRISGATE_BASE_URL}
+      QRISGATE_ADMIN_TOKEN: ${QRISGATE_ADMIN_TOKEN}
+      DRY_RUN: ${DRY_RUN:-false}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-6000}
+      CACHE_DIR: /tmp/cache
+      SEEN_STATE_PATH: /tmp/.paywatch_seen.json
+    ports:
+      - "8081:8081"
+    restart: unless-stopped

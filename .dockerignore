@@ -1,0 +1,12 @@
+.git
+.env
+graphify-out/
+coverage.out
+*.out
+*.test
+bin/
+dist/
+.idea/
+.vscode/
+.gobiz_cache.json
+.paywatch_seen.json

@@ -1,0 +1,15 @@
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+.env
+.idea/
+.vscode/
+coverage.out
+graphify-out/
+.DS_Store
+tenants.json
+.cache/
+.gobiz_cache.json
+.paywatch_seen.json
