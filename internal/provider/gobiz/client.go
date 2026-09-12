@@ -52,8 +52,12 @@ func (c *Client) authHeaders(withToken bool) http.Header {
 	h.Set("Referer", "https://portal.gofoodmerchant.co.id/")
 	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
 	h.Set("X-AppVersion", "platform-v3.107.0-94ce5d57")
+	h.Set("X-PhoneMake", "Windows 10 64-bit")
+	h.Set("X-PhoneModel", "Chrome 149.0.0.0 on Windows 10 64-bit")
 	h.Set("X-Platform", "Web")
+	h.Set("X-User-Locale", "en-US")
 	h.Set("X-User-Type", "merchant")
+	h.Set("x-DeviceOS", "Web")
 	h.Set("x-appId", "go-biz-web-dashboard")
 	h.Set("x-uniqueid", c.unique)
 	if withToken && c.token != "" {
