@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/dwiriyant/paywatch/internal/domain"
 )
 
 type tokenResponse struct {
@@ -40,7 +42,7 @@ func (c *Client) LoginPassword(ctx context.Context, email, password string) erro
 		return err
 	}
 	if status >= 400 || tok.AccessToken == "" {
-		return fmt.Errorf("gobiz password login failed: %s", tok.message())
+		return loginAuthError("gobiz password login failed", tok.message(), status)
 	}
 	c.token = tok.AccessToken
 	return nil
@@ -101,7 +103,7 @@ func (c *Client) LoginOTPVerify(ctx context.Context, phone, otp, otpToken string
 		return err
 	}
 	if status >= 400 || tok.AccessToken == "" {
-		return fmt.Errorf("gobiz otp login failed: %s", tok.message())
+		return loginAuthError("gobiz otp login failed", tok.message(), status)
 	}
 	c.token = tok.AccessToken
 	return nil
@@ -212,4 +214,26 @@ func mapToStruct(in map[string]any, out *apiErrorBody) error {
 		return err
 	}
 	return json.Unmarshal(b, out)
+}
+
+func loginAuthError(prefix, msg string, status int) error {
+	// ponytail: failed password/otp exchange is always fatal — retrying locks GoBiz accounts
+	_ = status
+	return fmt.Errorf("%w: %s: %s", domain.ErrAuthFatal, prefix, msg)
+}
+
+// isAuthFatalMessage detects wrong-password / lockout style GoBiz errors (id + en).
+func isAuthFatalMessage(msg string) bool {
+	m := strings.ToLower(msg)
+	needles := []string{
+		"diblok", "blokir", "terlalu banyak", "kesalahan saat mencoba masuk",
+		"password", "kata sandi", "salah", "invalid", "unauthorized",
+		"credential", "tidak valid", "login gagal", "try again in", "coba lagi",
+	}
+	for _, n := range needles {
+		if strings.Contains(m, n) {
+			return true
+		}
+	}
+	return false
 }

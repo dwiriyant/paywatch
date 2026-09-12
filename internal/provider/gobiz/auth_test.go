@@ -3,9 +3,12 @@ package gobiz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/dwiriyant/paywatch/internal/domain"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -56,6 +59,22 @@ func TestMapJournal(t *testing.T) {
 	})
 	if len(got) != 1 || got[0].Amount != 100 || got[0].ExternalID != "tx-j" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestLoginAuthError_IsFatal(t *testing.T) {
+	err := loginAuthError("gobiz password login failed", "Anda telah diblok sementara karena terlalu banyak kesalahan", 400)
+	if !errors.Is(err, domain.ErrAuthFatal) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestIsAuthFatalMessage(t *testing.T) {
+	if !isAuthFatalMessage("Anda telah diblok sementara karena terlalu banyak kesalahan saat mencoba masuk ke akun") {
+		t.Fatal("expected fatal")
+	}
+	if isAuthFatalMessage("timeout contacting upstream") {
+		t.Fatal("timeout should not match keyword list (still fatal via loginAuthError)")
 	}
 }
 

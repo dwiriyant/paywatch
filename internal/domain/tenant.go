@@ -9,6 +9,8 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrConflict     = errors.New("conflict")
 	ErrInvalidInput = errors.New("invalid input")
+	// ErrAuthFatal means credentials/lockout — stop polling this tenant to avoid further bans.
+	ErrAuthFatal = errors.New("auth fatal")
 )
 
 // Tenant is a qrisgate app bound to one payment-provider account.

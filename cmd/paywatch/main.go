@@ -51,7 +51,8 @@ func main() {
 	}
 
 	tenantRepo := postgres.NewTenantRepository(pool)
-	adminSvc := admin.NewService(tenantRepo)
+	authGate := tenant.NewAuthGate()
+	adminSvc := admin.NewService(tenantRepo).WithAuthGate(authGate)
 	adminHandler := admin.NewHandler(adminSvc)
 
 	e := echo.New()
@@ -78,6 +79,8 @@ func main() {
 		HistorySize: cfg.GobizHistorySize,
 		CacheDir:    cfg.CacheDir,
 		Log:         log,
+		Gate:        authGate,
+		Disabler:    tenantRepo,
 	})
 	w := watcher.New(source, settler, cfg.PollInterval, cfg.SeenStatePath, log)
 

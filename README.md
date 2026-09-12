@@ -15,6 +15,7 @@ Go 1.26+. **One replica.** `POLL_INTERVAL_MS >= 5000`.
 
 > [!WARNING]
 > Unofficial GoBiz APIs. Aggressive polling can get accounts banned.
+> On login failure (wrong password / temp lockout), that tenant is **auto-disabled** so polls stop. Fix credentials, then `PATCH /v1/tenants/:id` with `"enabled": true`.
 
 ## Quick start
 

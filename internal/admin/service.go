@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/dwiriyant/paywatch/internal/domain"
+	"github.com/dwiriyant/paywatch/internal/tenant"
 )
 
 type TenantStore interface {
@@ -17,10 +18,16 @@ type TenantStore interface {
 
 type Service struct {
 	tenants TenantStore
+	gate    *tenant.AuthGate
 }
 
 func NewService(tenants TenantStore) *Service {
 	return &Service{tenants: tenants}
+}
+
+func (s *Service) WithAuthGate(gate *tenant.AuthGate) *Service {
+	s.gate = gate
+	return s
 }
 
 type GobizInput struct {
@@ -153,6 +160,10 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 	}
 	if err := s.tenants.Update(ctx, t); err != nil {
 		return nil, err
+	}
+	// Re-enable or credential change → allow watcher to poll again.
+	if s.gate != nil && t.Enabled && (in.Enabled != nil || in.Gobiz != nil) {
+		s.gate.Unblock(t.AppID)
 	}
 	v := toView(t)
 	return &v, nil
