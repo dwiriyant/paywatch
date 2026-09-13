@@ -61,11 +61,13 @@ func main() {
 	e.Use(middleware.Recover())
 	e.GET("/healthz", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
 	v1 := e.Group("/v1", auth.AdminAuth(cfg.AdminToken))
+	v1.POST("/tenants/verify", adminHandler.Verify)
 	v1.POST("/tenants", adminHandler.Create)
 	v1.GET("/tenants", adminHandler.List)
 	v1.GET("/tenants/:id", adminHandler.Get)
 	v1.PATCH("/tenants/:id", adminHandler.Update)
 	v1.DELETE("/tenants/:id", adminHandler.Delete)
+	v1.POST("/tenants/:id/verify", adminHandler.VerifyTenant)
 
 	server := &http.Server{Addr: cfg.Addr, Handler: e, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
 

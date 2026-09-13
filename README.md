@@ -24,7 +24,20 @@ cp .env.example .env
 make docker-up
 export ADMIN_TOKEN=dev-admin-token
 
-# Register tenant (qrisgate app_id + GoBiz login)
+# 1) Verify GoBiz credentials (no tenant created, no polling)
+curl -s -X POST http://localhost:8081/v1/tenants/verify \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "gobiz",
+    "gobiz": {
+      "login_method": "password",
+      "email": "merchant@example.com",
+      "password": "secret"
+    }
+  }'
+
+# 2) Register tenant (saved disabled — will not poll yet)
 curl -s -X POST http://localhost:8081/v1/tenants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
@@ -38,6 +51,15 @@ curl -s -X POST http://localhost:8081/v1/tenants \
       "password": "secret"
     }
   }'
+
+# 3) Optional: re-check stored credentials
+# curl -s -X POST http://localhost:8081/v1/tenants/$TENANT_ID/verify -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# 4) Enable polling
+curl -s -X PATCH http://localhost:8081/v1/tenants/$TENANT_ID \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}'
 ```
 
 ## API
@@ -45,13 +67,15 @@ curl -s -X POST http://localhost:8081/v1/tenants \
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/healthz` | — | Liveness |
-| POST | `/v1/tenants` | Bearer admin | Register tenant |
+| POST | `/v1/tenants/verify` | Bearer admin | Live-check GoBiz email/password (or token) |
+| POST | `/v1/tenants` | Bearer admin | Register tenant (**disabled by default**) |
 | GET | `/v1/tenants` | Bearer admin | List (secrets masked) |
 | GET | `/v1/tenants/:id` | Bearer admin | Get one |
-| PATCH | `/v1/tenants/:id` | Bearer admin | Update / disable |
+| PATCH | `/v1/tenants/:id` | Bearer admin | Update / enable / disable |
+| POST | `/v1/tenants/:id/verify` | Bearer admin | Live-check stored credentials |
 | DELETE | `/v1/tenants/:id` | Bearer admin | Delete |
 
-Enabled tenants are picked up on the next poll cycle (no restart).
+New tenants and credential updates stay **disabled** until you set `"enabled": true`. Enabled tenants are picked up on the next poll cycle (no restart).
 
 ## Docker Hub
 

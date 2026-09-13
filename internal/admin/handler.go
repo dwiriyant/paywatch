@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/dwiriyant/paywatch/internal/domain"
@@ -64,6 +65,26 @@ func (h *Handler) Delete(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (h *Handler) Verify(c echo.Context) error {
+	var in VerifyInput
+	if err := c.Bind(&in); err != nil {
+		return response.BadRequest(c, "invalid json")
+	}
+	out, err := h.svc.Verify(c.Request().Context(), in)
+	if err != nil {
+		return mapErr(c, err, "gobiz email+password (or access_token) required")
+	}
+	return response.OK(c, out)
+}
+
+func (h *Handler) VerifyTenant(c echo.Context) error {
+	out, err := h.svc.VerifyTenant(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return mapErr(c, err, "tenant credentials incomplete or login method unsupported")
+	}
+	return response.OK(c, out)
+}
+
 func mapErr(c echo.Context, err error, invalidMsg string) error {
 	switch {
 	case errors.Is(err, domain.ErrInvalidInput):
@@ -75,6 +96,12 @@ func mapErr(c echo.Context, err error, invalidMsg string) error {
 		return response.NotFound(c)
 	case errors.Is(err, domain.ErrConflict):
 		return response.Conflict(c, "app_id already registered")
+	case errors.Is(err, domain.ErrAuthFatal):
+		msg := err.Error()
+		if i := strings.Index(msg, "gobiz "); i >= 0 {
+			msg = msg[i:]
+		}
+		return response.BadRequest(c, msg)
 	default:
 		return response.Internal(c)
 	}

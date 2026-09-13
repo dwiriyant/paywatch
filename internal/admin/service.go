@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/dwiriyant/paywatch/internal/domain"
+	"github.com/dwiriyant/paywatch/internal/provider/gobiz"
 	"github.com/dwiriyant/paywatch/internal/tenant"
 )
 
@@ -16,17 +18,28 @@ type TenantStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// PasswordVerifier checks GoBiz email/password against the live API.
+type PasswordVerifier func(ctx context.Context, email, password string) (merchantID string, err error)
+
 type Service struct {
-	tenants TenantStore
-	gate    *tenant.AuthGate
+	tenants         TenantStore
+	gate            *tenant.AuthGate
+	verifyPassword  PasswordVerifier
 }
 
 func NewService(tenants TenantStore) *Service {
-	return &Service{tenants: tenants}
+	return &Service{tenants: tenants, verifyPassword: liveVerifyPassword}
 }
 
 func (s *Service) WithAuthGate(gate *tenant.AuthGate) *Service {
 	s.gate = gate
+	return s
+}
+
+func (s *Service) WithPasswordVerifier(fn PasswordVerifier) *Service {
+	if fn != nil {
+		s.verifyPassword = fn
+	}
 	return s
 }
 
@@ -52,6 +65,17 @@ type UpdateTenantInput struct {
 	Enabled  *bool       `json:"enabled"`
 	Provider *string     `json:"provider"`
 	Gobiz    *GobizInput `json:"gobiz"`
+}
+
+type VerifyInput struct {
+	Provider string      `json:"provider"`
+	Gobiz    *GobizInput `json:"gobiz"`
+}
+
+type VerifyResult struct {
+	OK         bool   `json:"ok"`
+	MerchantID string `json:"merchant_id,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 type TenantView struct {
@@ -92,7 +116,8 @@ func (s *Service) Create(ctx context.Context, in CreateTenantInput) (*TenantView
 	if provider != "gobiz" {
 		return nil, domain.ErrInvalidInput
 	}
-	enabled := true
+	// ponytail: new tenants stay disabled until credentials are verified + explicitly enabled
+	enabled := false
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
@@ -142,9 +167,6 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 	if in.Name != nil {
 		t.Name = *in.Name
 	}
-	if in.Enabled != nil {
-		t.Enabled = *in.Enabled
-	}
 	if in.Provider != nil {
 		p := strings.ToLower(*in.Provider)
 		if p != "gobiz" {
@@ -154,6 +176,13 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 	}
 	if in.Gobiz != nil {
 		applyGobiz(t, in.Gobiz, false)
+		// Credential change pauses polling until user re-enables after verify.
+		if in.Enabled == nil {
+			t.Enabled = false
+		}
+	}
+	if in.Enabled != nil {
+		t.Enabled = *in.Enabled
 	}
 	if err := validateGobiz(t); err != nil {
 		return nil, err
@@ -171,6 +200,82 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.tenants.Delete(ctx, id)
+}
+
+// Verify checks gobiz credentials against the live API (does not enable polling).
+func (s *Service) Verify(ctx context.Context, in VerifyInput) (*VerifyResult, error) {
+	provider := strings.ToLower(in.Provider)
+	if provider == "" {
+		provider = "gobiz"
+	}
+	if provider != "gobiz" || in.Gobiz == nil {
+		return nil, domain.ErrInvalidInput
+	}
+	return s.verifyGobiz(ctx, in.Gobiz)
+}
+
+// VerifyTenant checks the stored credentials for a tenant (does not enable polling).
+func (s *Service) VerifyTenant(ctx context.Context, id string) (*VerifyResult, error) {
+	t, err := s.tenants.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	g := &GobizInput{
+		LoginMethod: t.LoginMethod,
+		Email:       t.Email,
+		Password:    t.Password,
+		Phone:       t.Phone,
+		AccessToken: t.AccessToken,
+		MerchantID:  t.MerchantID,
+	}
+	return s.verifyGobiz(ctx, g)
+}
+
+func (s *Service) verifyGobiz(ctx context.Context, g *GobizInput) (*VerifyResult, error) {
+	method := strings.ToLower(g.LoginMethod)
+	if method == "" {
+		method = "password"
+	}
+	switch method {
+	case "password":
+		if g.Email == "" || g.Password == "" {
+			return nil, domain.ErrInvalidInput
+		}
+		mid, err := s.verifyPassword(ctx, g.Email, g.Password)
+		if err != nil {
+			return nil, err
+		}
+		return &VerifyResult{OK: true, MerchantID: mid, Message: "credentials ok"}, nil
+	case "token":
+		if g.AccessToken == "" {
+			return nil, domain.ErrInvalidInput
+		}
+		mid, err := liveVerifyToken(ctx, g.AccessToken)
+		if err != nil {
+			return nil, err
+		}
+		return &VerifyResult{OK: true, MerchantID: mid, Message: "credentials ok"}, nil
+	default:
+		// OTP needs interactive SMS — not supported on verify endpoint
+		return nil, domain.ErrInvalidInput
+	}
+}
+
+func liveVerifyPassword(ctx context.Context, email, password string) (string, error) {
+	c := gobiz.NewClient(nil)
+	if err := c.LoginPassword(ctx, email, password); err != nil {
+		return "", err
+	}
+	return c.ResolveMerchantID(ctx)
+}
+
+func liveVerifyToken(ctx context.Context, accessToken string) (string, error) {
+	c := gobiz.NewClient(nil)
+	c.SetToken(accessToken)
+	if !c.TokenValid(ctx) {
+		return "", errors.Join(domain.ErrAuthFatal, errors.New("gobiz access token invalid"))
+	}
+	return c.ResolveMerchantID(ctx)
 }
 
 func applyGobiz(t *domain.Tenant, g *GobizInput, create bool) {
