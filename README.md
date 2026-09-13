@@ -15,7 +15,9 @@ Go 1.26+. **One replica.** `POLL_INTERVAL_MS >= 5000`.
 
 > [!WARNING]
 > Unofficial GoBiz APIs. Aggressive polling can get accounts banned.
-> On login failure (wrong password / temp lockout), that tenant is **auto-disabled** so polls stop. Fix credentials, then `PATCH /v1/tenants/:id` with `"enabled": true`.
+> On auth failure (refresh/login), that tenant is **auto-disabled**. Re-verify with password, then `PATCH` `"enabled": true`.
+
+**Passwords are never stored.** Create/verify with email+password exchanges them for `access_token` + `refresh_token` (saved). Polling uses tokens; expired access tokens are refreshed automatically.
 
 ## Quick start
 
@@ -37,7 +39,7 @@ curl -s -X POST http://localhost:8081/v1/tenants/verify \
     }
   }'
 
-# 2) Register tenant (saved disabled — will not poll yet)
+# 2) Register tenant — password is exchanged for tokens, then discarded (disabled until you enable)
 curl -s -X POST http://localhost:8081/v1/tenants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
@@ -52,7 +54,7 @@ curl -s -X POST http://localhost:8081/v1/tenants \
     }
   }'
 
-# 3) Optional: re-check stored credentials
+# 3) Optional: re-check stored tokens (refreshes if needed)
 # curl -s -X POST http://localhost:8081/v1/tenants/$TENANT_ID/verify -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 4) Enable polling
@@ -68,11 +70,11 @@ curl -s -X PATCH http://localhost:8081/v1/tenants/$TENANT_ID \
 |--------|------|------|-------------|
 | GET | `/healthz` | — | Liveness |
 | POST | `/v1/tenants/verify` | Bearer admin | Live-check GoBiz email/password (or token); rate-limited |
-| POST | `/v1/tenants` | Bearer admin | Register tenant (**disabled by default**) |
+| POST | `/v1/tenants` | Bearer admin | Register tenant (**disabled by default**; password → tokens) |
 | GET | `/v1/tenants` | Bearer admin | List (secrets masked) |
 | GET | `/v1/tenants/:id` | Bearer admin | Get one |
 | PATCH | `/v1/tenants/:id` | Bearer admin | Update / enable / disable |
-| POST | `/v1/tenants/:id/verify` | Bearer admin | Live-check stored credentials; rate-limited |
+| POST | `/v1/tenants/:id/verify` | Bearer admin | Validate/refresh stored tokens; rate-limited |
 | DELETE | `/v1/tenants/:id` | Bearer admin | Delete |
 
 New tenants and credential updates stay **disabled** until you set `"enabled": true`. Enabled tenants are picked up on the next poll cycle (no restart).

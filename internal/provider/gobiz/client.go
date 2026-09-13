@@ -22,10 +22,11 @@ type httpDoer interface {
 }
 
 type Client struct {
-	http   httpDoer
-	token  string
-	merch  string
-	unique string
+	http    httpDoer
+	token   string
+	refresh string
+	merch   string
+	unique  string
 }
 
 func NewClient(httpClient httpDoer) *Client {
@@ -35,10 +36,12 @@ func NewClient(httpClient httpDoer) *Client {
 	return &Client{http: httpClient, unique: uuid.NewString()}
 }
 
-func (c *Client) SetToken(token string)   { c.token = token }
-func (c *Client) Token() string           { return c.token }
-func (c *Client) SetMerchantID(id string) { c.merch = id }
-func (c *Client) MerchantID() string      { return c.merch }
+func (c *Client) SetToken(token string)          { c.token = token }
+func (c *Client) Token() string                  { return c.token }
+func (c *Client) SetRefreshToken(token string)   { c.refresh = token }
+func (c *Client) RefreshToken() string           { return c.refresh }
+func (c *Client) SetMerchantID(id string)        { c.merch = id }
+func (c *Client) MerchantID() string             { return c.merch }
 
 func (c *Client) authHeaders(withToken bool) http.Header {
 	h := make(http.Header)

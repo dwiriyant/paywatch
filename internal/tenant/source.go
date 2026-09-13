@@ -80,21 +80,43 @@ func (s *Source) Providers(ctx context.Context) ([]domain.Provider, error) {
 func (s *Source) build(t *domain.Tenant) (domain.Provider, error) {
 	switch strings.ToLower(t.Provider) {
 	case "gobiz":
+		appID := t.AppID
 		return gobiz.NewProvider(gobiz.Config{
-			LoginMethod: t.LoginMethod,
-			Email:       t.Email,
-			Password:    t.Password,
-			Phone:       t.Phone,
-			AccessToken: t.AccessToken,
-			MerchantID:  t.MerchantID,
-			CachePath:   filepath.Join(s.opts.CacheDir, "gobiz-"+t.AppID+".json"),
-			HistoryDays: s.opts.HistoryDays,
-			HistorySize: s.opts.HistorySize,
-			Log:         s.opts.Log.With("app_id", t.AppID, "provider", "gobiz"),
+			LoginMethod:  "token",
+			AccessToken:  t.AccessToken,
+			RefreshToken: t.RefreshToken,
+			MerchantID:   t.MerchantID,
+			CachePath:    filepath.Join(s.opts.CacheDir, "gobiz-"+t.AppID+".json"),
+			HistoryDays:  s.opts.HistoryDays,
+			HistorySize:  s.opts.HistorySize,
+			Log:          s.opts.Log.With("app_id", t.AppID, "provider", "gobiz"),
+			SaveSession: func(ctx context.Context, access, refresh, merchant string) error {
+				return s.saveSession(ctx, appID, access, refresh, merchant)
+			},
 		}, nil), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", t.Provider)
 	}
+}
+
+func (s *Source) saveSession(ctx context.Context, appID, access, refresh, merchant string) error {
+	if s.opts.Disabler == nil || appID == "" {
+		return nil
+	}
+	t, err := s.opts.Disabler.GetByAppID(ctx, appID)
+	if err != nil {
+		return err
+	}
+	t.AccessToken = access
+	if refresh != "" {
+		t.RefreshToken = refresh
+	}
+	if merchant != "" {
+		t.MerchantID = merchant
+	}
+	t.Password = ""
+	t.LoginMethod = "token"
+	return s.opts.Disabler.Update(ctx, t)
 }
 
 func (s *Source) blockAuth(ctx context.Context, appID string, cause error) {

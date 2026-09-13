@@ -56,7 +56,7 @@ func (s *stubDisabler) Update(ctx context.Context, t *domain.Tenant) error {
 func TestBlockAuth_DisablesAndSkips(t *testing.T) {
 	ten := &domain.Tenant{
 		ID: "1", AppID: "app-1", Provider: "gobiz", Enabled: true,
-		LoginMethod: "token", AccessToken: "x",
+		LoginMethod: "token", AccessToken: "x", RefreshToken: "r",
 	}
 	dis := &stubDisabler{t: ten}
 	gate := NewAuthGate()

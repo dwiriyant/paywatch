@@ -44,7 +44,7 @@ func (c *Client) LoginPassword(ctx context.Context, email, password string) erro
 	if status >= 400 || tok.AccessToken == "" {
 		return loginAuthError("gobiz password login failed", tok.message(), status)
 	}
-	c.token = tok.AccessToken
+	c.applyTokenResponse(tok)
 	return nil
 }
 
@@ -105,8 +105,54 @@ func (c *Client) LoginOTPVerify(ctx context.Context, phone, otp, otpToken string
 	if status >= 400 || tok.AccessToken == "" {
 		return loginAuthError("gobiz otp login failed", tok.message(), status)
 	}
-	c.token = tok.AccessToken
+	c.applyTokenResponse(tok)
 	return nil
+}
+
+// RefreshAccessToken exchanges a refresh_token for a new access token (unofficial /goid/token).
+func (c *Client) RefreshAccessToken(ctx context.Context, refreshToken string) error {
+	if refreshToken == "" {
+		refreshToken = c.refresh
+	}
+	if refreshToken == "" {
+		return fmt.Errorf("%w: missing refresh token", domain.ErrAuthFatal)
+	}
+	headers := c.authHeaders(false)
+	var tok tokenResponse
+	status, err := c.doJSON(ctx, http.MethodPost, baseURL+"/goid/token", headers, map[string]any{
+		"client_id":  clientID,
+		"grant_type": "refresh_token",
+		"data":       map[string]string{"refresh_token": refreshToken},
+	}, &tok)
+	if err != nil {
+		return err
+	}
+	if status >= 400 || tok.AccessToken == "" {
+		// fallback: some gateways expect refresh_token at top level
+		status, err = c.doJSON(ctx, http.MethodPost, baseURL+"/goid/token", headers, map[string]any{
+			"client_id":     clientID,
+			"grant_type":    "refresh_token",
+			"refresh_token": refreshToken,
+		}, &tok)
+		if err != nil {
+			return err
+		}
+		if status >= 400 || tok.AccessToken == "" {
+			return loginAuthError("gobiz refresh failed", tok.message(), status)
+		}
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = refreshToken // keep previous if API omits rotation
+	}
+	c.applyTokenResponse(tok)
+	return nil
+}
+
+func (c *Client) applyTokenResponse(tok tokenResponse) {
+	c.token = tok.AccessToken
+	if tok.RefreshToken != "" {
+		c.refresh = tok.RefreshToken
+	}
 }
 
 func (c *Client) TokenValid(ctx context.Context) bool {

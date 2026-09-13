@@ -18,13 +18,20 @@ type TenantStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// PasswordVerifier checks GoBiz email/password against the live API.
-type PasswordVerifier func(ctx context.Context, email, password string) (merchantID string, err error)
+// AuthSession is the token pair obtained from a live GoBiz login (password is not stored).
+type AuthSession struct {
+	AccessToken  string
+	RefreshToken string
+	MerchantID   string
+}
+
+// PasswordVerifier exchanges email/password for tokens against the live API.
+type PasswordVerifier func(ctx context.Context, email, password string) (AuthSession, error)
 
 type Service struct {
-	tenants         TenantStore
-	gate            *tenant.AuthGate
-	verifyPassword  PasswordVerifier
+	tenants        TenantStore
+	gate           *tenant.AuthGate
+	verifyPassword PasswordVerifier
 }
 
 func NewService(tenants TenantStore) *Service {
@@ -44,12 +51,13 @@ func (s *Service) WithPasswordVerifier(fn PasswordVerifier) *Service {
 }
 
 type GobizInput struct {
-	LoginMethod string `json:"login_method"`
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	Phone       string `json:"phone"`
-	AccessToken string `json:"access_token"`
-	MerchantID  string `json:"merchant_id"`
+	LoginMethod  string `json:"login_method"`
+	Email        string `json:"email"`
+	Password     string `json:"password"` // request-only; never persisted
+	Phone        string `json:"phone"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	MerchantID   string `json:"merchant_id"`
 }
 
 type CreateTenantInput struct {
@@ -75,30 +83,33 @@ type VerifyInput struct {
 type VerifyResult struct {
 	OK         bool   `json:"ok"`
 	MerchantID string `json:"merchant_id,omitempty"`
+	HasToken   bool   `json:"has_access_token,omitempty"`
+	HasRefresh bool   `json:"has_refresh_token,omitempty"`
 	Message    string `json:"message,omitempty"`
 }
 
 type TenantView struct {
-	ID          string `json:"id"`
-	AppID       string `json:"app_id"`
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	Enabled     bool   `json:"enabled"`
-	LoginMethod string `json:"login_method"`
-	Email       string `json:"email,omitempty"`
-	Phone       string `json:"phone,omitempty"`
-	MerchantID  string `json:"merchant_id,omitempty"`
-	HasPassword bool   `json:"has_password"`
-	HasToken    bool   `json:"has_access_token"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID           string `json:"id"`
+	AppID        string `json:"app_id"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	Enabled      bool   `json:"enabled"`
+	LoginMethod  string `json:"login_method"`
+	Email        string `json:"email,omitempty"`
+	Phone        string `json:"phone,omitempty"`
+	MerchantID   string `json:"merchant_id,omitempty"`
+	HasPassword  bool   `json:"has_password"` // always false after token-only; kept for API compat
+	HasToken     bool   `json:"has_access_token"`
+	HasRefresh   bool   `json:"has_refresh_token"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 func toView(t *domain.Tenant) TenantView {
 	return TenantView{
 		ID: t.ID, AppID: t.AppID, Name: t.Name, Provider: t.Provider, Enabled: t.Enabled,
 		LoginMethod: t.LoginMethod, Email: t.Email, Phone: t.Phone, MerchantID: t.MerchantID,
-		HasPassword: t.Password != "", HasToken: t.AccessToken != "",
+		HasPassword: false, HasToken: t.AccessToken != "", HasRefresh: t.RefreshToken != "",
 		CreatedAt: t.CreatedAt.UTC().Format(timeRFC3339), UpdatedAt: t.UpdatedAt.UTC().Format(timeRFC3339),
 	}
 }
@@ -116,17 +127,18 @@ func (s *Service) Create(ctx context.Context, in CreateTenantInput) (*TenantView
 	if provider != "gobiz" {
 		return nil, domain.ErrInvalidInput
 	}
-	// ponytail: new tenants stay disabled until credentials are verified + explicitly enabled
 	enabled := false
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
 	t := &domain.Tenant{
 		AppID: in.AppID, Name: in.Name, Provider: provider, Enabled: enabled,
-		LoginMethod: "password",
+		LoginMethod: "token",
 	}
 	if in.Gobiz != nil {
-		applyGobiz(t, in.Gobiz, true)
+		if err := s.applyGobizSession(ctx, t, in.Gobiz, true); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateGobiz(t); err != nil {
 		return nil, err
@@ -175,8 +187,9 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 		t.Provider = p
 	}
 	if in.Gobiz != nil {
-		applyGobiz(t, in.Gobiz, false)
-		// Credential change pauses polling until user re-enables after verify.
+		if err := s.applyGobizSession(ctx, t, in.Gobiz, false); err != nil {
+			return nil, err
+		}
 		if in.Enabled == nil {
 			t.Enabled = false
 		}
@@ -190,7 +203,6 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateTenantInput) (
 	if err := s.tenants.Update(ctx, t); err != nil {
 		return nil, err
 	}
-	// Re-enable or credential change → allow watcher to poll again.
 	if s.gate != nil && t.Enabled && (in.Enabled != nil || in.Gobiz != nil) {
 		s.gate.Unblock(t.AppID)
 	}
@@ -214,109 +226,167 @@ func (s *Service) Verify(ctx context.Context, in VerifyInput) (*VerifyResult, er
 	return s.verifyGobiz(ctx, in.Gobiz)
 }
 
-// VerifyTenant checks the stored credentials for a tenant (does not enable polling).
+// VerifyTenant checks stored tokens (refresh if needed) and persists rotated tokens.
 func (s *Service) VerifyTenant(ctx context.Context, id string) (*VerifyResult, error) {
 	t, err := s.tenants.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	g := &GobizInput{
-		LoginMethod: t.LoginMethod,
-		Email:       t.Email,
-		Password:    t.Password,
-		Phone:       t.Phone,
-		AccessToken: t.AccessToken,
-		MerchantID:  t.MerchantID,
+		LoginMethod:  "token",
+		AccessToken:  t.AccessToken,
+		RefreshToken: t.RefreshToken,
+		MerchantID:   t.MerchantID,
+		Email:        t.Email,
 	}
-	return s.verifyGobiz(ctx, g)
+	sess, out, err := s.verifyGobizSession(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	if sess.AccessToken != "" && sess.AccessToken != t.AccessToken {
+		t.AccessToken = sess.AccessToken
+		if sess.RefreshToken != "" {
+			t.RefreshToken = sess.RefreshToken
+		}
+		t.Password = ""
+		t.LoginMethod = "token"
+		if sess.MerchantID != "" {
+			t.MerchantID = sess.MerchantID
+		}
+		_ = s.tenants.Update(ctx, t)
+	}
+	return out, nil
 }
 
 func (s *Service) verifyGobiz(ctx context.Context, g *GobizInput) (*VerifyResult, error) {
+	_, out, err := s.verifyGobizSession(ctx, g)
+	return out, err
+}
+
+func (s *Service) verifyGobizSession(ctx context.Context, g *GobizInput) (AuthSession, *VerifyResult, error) {
 	method := strings.ToLower(g.LoginMethod)
 	if method == "" {
-		method = "password"
+		if g.Password != "" {
+			method = "password"
+		} else {
+			method = "token"
+		}
 	}
 	switch method {
 	case "password":
 		if g.Email == "" || g.Password == "" {
-			return nil, domain.ErrInvalidInput
+			return AuthSession{}, nil, domain.ErrInvalidInput
 		}
-		mid, err := s.verifyPassword(ctx, g.Email, g.Password)
+		sess, err := s.verifyPassword(ctx, g.Email, g.Password)
 		if err != nil {
-			return nil, err
+			return AuthSession{}, nil, err
 		}
-		return &VerifyResult{OK: true, MerchantID: mid, Message: "credentials ok"}, nil
+		return sess, &VerifyResult{
+			OK: true, MerchantID: sess.MerchantID, Message: "credentials ok",
+			HasToken: sess.AccessToken != "", HasRefresh: sess.RefreshToken != "",
+		}, nil
 	case "token":
-		if g.AccessToken == "" {
-			return nil, domain.ErrInvalidInput
+		if g.AccessToken == "" && g.RefreshToken == "" {
+			return AuthSession{}, nil, domain.ErrInvalidInput
 		}
-		mid, err := liveVerifyToken(ctx, g.AccessToken)
+		sess, err := liveVerifyOrRefresh(ctx, g.AccessToken, g.RefreshToken)
 		if err != nil {
-			return nil, err
+			return AuthSession{}, nil, err
 		}
-		return &VerifyResult{OK: true, MerchantID: mid, Message: "credentials ok"}, nil
+		return sess, &VerifyResult{
+			OK: true, MerchantID: sess.MerchantID, Message: "credentials ok",
+			HasToken: true, HasRefresh: sess.RefreshToken != "",
+		}, nil
 	default:
-		// OTP needs interactive SMS — not supported on verify endpoint
-		return nil, domain.ErrInvalidInput
+		return AuthSession{}, nil, domain.ErrInvalidInput
 	}
 }
 
-func liveVerifyPassword(ctx context.Context, email, password string) (string, error) {
-	c := gobiz.NewClient(nil)
-	if err := c.LoginPassword(ctx, email, password); err != nil {
-		return "", err
-	}
-	return c.ResolveMerchantID(ctx)
-}
-
-func liveVerifyToken(ctx context.Context, accessToken string) (string, error) {
-	c := gobiz.NewClient(nil)
-	c.SetToken(accessToken)
-	if !c.TokenValid(ctx) {
-		return "", errors.Join(domain.ErrAuthFatal, errors.New("gobiz access token invalid"))
-	}
-	return c.ResolveMerchantID(ctx)
-}
-
-func applyGobiz(t *domain.Tenant, g *GobizInput, create bool) {
-	if g.LoginMethod != "" {
-		t.LoginMethod = strings.ToLower(g.LoginMethod)
-	} else if create {
-		t.LoginMethod = "password"
-	}
+// applyGobizSession exchanges a password (if present) for tokens and never keeps the password.
+func (s *Service) applyGobizSession(ctx context.Context, t *domain.Tenant, g *GobizInput, create bool) error {
 	if g.Email != "" || create {
 		t.Email = g.Email
-	}
-	if g.Password != "" {
-		t.Password = g.Password
 	}
 	if g.Phone != "" || create {
 		t.Phone = g.Phone
 	}
-	if g.AccessToken != "" {
-		t.AccessToken = g.AccessToken
-	}
-	if g.MerchantID != "" || create {
+	if g.MerchantID != "" {
 		t.MerchantID = g.MerchantID
 	}
+
+	switch {
+	case g.Password != "":
+		if g.Email == "" {
+			return domain.ErrInvalidInput
+		}
+		sess, err := s.verifyPassword(ctx, g.Email, g.Password)
+		if err != nil {
+			return err
+		}
+		t.AccessToken = sess.AccessToken
+		t.RefreshToken = sess.RefreshToken
+		if sess.MerchantID != "" {
+			t.MerchantID = sess.MerchantID
+		}
+	case g.AccessToken != "":
+		t.AccessToken = g.AccessToken
+		if g.RefreshToken != "" {
+			t.RefreshToken = g.RefreshToken
+		}
+	case create:
+		return domain.ErrInvalidInput
+	}
+
+	t.Password = ""
+	t.LoginMethod = "token"
+	return nil
 }
 
 func validateGobiz(t *domain.Tenant) error {
-	switch t.LoginMethod {
-	case "password":
-		if t.Email == "" || t.Password == "" {
-			return domain.ErrInvalidInput
-		}
-	case "otp":
-		if t.Phone == "" {
-			return domain.ErrInvalidInput
-		}
-	case "token":
-		if t.AccessToken == "" {
-			return domain.ErrInvalidInput
-		}
-	default:
+	if t.AccessToken == "" {
 		return domain.ErrInvalidInput
 	}
+	t.Password = ""
+	t.LoginMethod = "token"
 	return nil
+}
+
+func liveVerifyPassword(ctx context.Context, email, password string) (AuthSession, error) {
+	c := gobiz.NewClient(nil)
+	if err := c.LoginPassword(ctx, email, password); err != nil {
+		return AuthSession{}, err
+	}
+	mid, err := c.ResolveMerchantID(ctx)
+	if err != nil {
+		return AuthSession{}, err
+	}
+	return AuthSession{
+		AccessToken:  c.Token(),
+		RefreshToken: c.RefreshToken(),
+		MerchantID:   mid,
+	}, nil
+}
+
+func liveVerifyOrRefresh(ctx context.Context, access, refresh string) (AuthSession, error) {
+	c := gobiz.NewClient(nil)
+	c.SetToken(access)
+	c.SetRefreshToken(refresh)
+	if access != "" && c.TokenValid(ctx) {
+		mid, err := c.ResolveMerchantID(ctx)
+		if err != nil {
+			return AuthSession{}, err
+		}
+		return AuthSession{AccessToken: c.Token(), RefreshToken: c.RefreshToken(), MerchantID: mid}, nil
+	}
+	if refresh == "" {
+		return AuthSession{}, errors.Join(domain.ErrAuthFatal, errors.New("gobiz access token invalid"))
+	}
+	if err := c.RefreshAccessToken(ctx, refresh); err != nil {
+		return AuthSession{}, err
+	}
+	mid, err := c.ResolveMerchantID(ctx)
+	if err != nil {
+		return AuthSession{}, err
+	}
+	return AuthSession{AccessToken: c.Token(), RefreshToken: c.RefreshToken(), MerchantID: mid}, nil
 }

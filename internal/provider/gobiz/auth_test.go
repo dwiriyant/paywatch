@@ -62,6 +62,30 @@ func TestMapJournal(t *testing.T) {
 	}
 }
 
+func TestRefreshAccessToken(t *testing.T) {
+	var paths []string
+	c := NewClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rec).Encode(map[string]any{
+			"access_token": "new-atk", "refresh_token": "new-rtk",
+		})
+		res := rec.Result()
+		res.StatusCode = http.StatusCreated
+		return res, nil
+	})})
+	if err := c.RefreshAccessToken(context.Background(), "old-rtk"); err != nil {
+		t.Fatal(err)
+	}
+	if c.Token() != "new-atk" || c.RefreshToken() != "new-rtk" {
+		t.Fatalf("token=%s refresh=%s", c.Token(), c.RefreshToken())
+	}
+	if len(paths) == 0 || paths[0] != "/goid/token" {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
 func TestLoginAuthError_IsFatal(t *testing.T) {
 	err := loginAuthError("gobiz password login failed", "Anda telah diblok sementara karena terlalu banyak kesalahan", 400)
 	if !errors.Is(err, domain.ErrAuthFatal) {

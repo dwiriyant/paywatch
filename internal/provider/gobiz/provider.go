@@ -1,12 +1,9 @@
 package gobiz
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"strings"
 	"sync"
 
 	"github.com/dwiriyant/paywatch/internal/cache"
@@ -14,22 +11,25 @@ import (
 )
 
 type tokenCache struct {
-	AccessToken string `json:"access_token"`
-	MerchantID  string `json:"merchant_id"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	MerchantID   string `json:"merchant_id"`
 }
+
+// SessionSaver persists rotated tokens (e.g. after refresh) back to the tenant store.
+type SessionSaver func(ctx context.Context, accessToken, refreshToken, merchantID string) error
 
 // Config wires the GoBiz provider.
 type Config struct {
-	LoginMethod string // password | otp | token
-	Email       string
-	Password    string
-	Phone       string
-	AccessToken string
-	MerchantID  string
-	CachePath   string
-	HistoryDays int
-	HistorySize int
-	Log         *slog.Logger
+	LoginMethod  string // token (password/otp only used at verify time, not for polling)
+	AccessToken  string
+	RefreshToken string
+	MerchantID   string
+	CachePath    string
+	HistoryDays  int
+	HistorySize  int
+	Log          *slog.Logger
+	SaveSession  SessionSaver
 }
 
 // Provider implements domain.Provider for GoBiz / GoPay Merchant.
@@ -64,7 +64,7 @@ func (p *Provider) Poll(ctx context.Context) ([]domain.IncomingPayment, error) {
 	}
 	list, err := p.client.History(ctx, p.cfg.HistoryDays, p.cfg.HistorySize)
 	if err == errUnauthorized {
-		p.log.Warn("gobiz token expired, re-login")
+		p.log.Warn("gobiz token expired, refreshing")
 		p.mu.Lock()
 		p.client.SetToken("")
 		p.mu.Unlock()
@@ -85,11 +85,19 @@ func (p *Provider) ensureSession(ctx context.Context) error {
 
 	if p.client.Token() == "" {
 		switch {
-		case p.cfg.AccessToken != "":
-			p.client.SetToken(p.cfg.AccessToken)
 		case cached.AccessToken != "":
 			p.client.SetToken(cached.AccessToken)
 			p.log.Info("gobiz token loaded from cache")
+		case p.cfg.AccessToken != "":
+			p.client.SetToken(p.cfg.AccessToken)
+		}
+	}
+	if p.client.RefreshToken() == "" {
+		switch {
+		case cached.RefreshToken != "":
+			p.client.SetRefreshToken(cached.RefreshToken)
+		case p.cfg.RefreshToken != "":
+			p.client.SetRefreshToken(p.cfg.RefreshToken)
 		}
 	}
 	if p.client.MerchantID() == "" {
@@ -102,8 +110,8 @@ func (p *Provider) ensureSession(ctx context.Context) error {
 	}
 
 	if p.client.Token() == "" || !p.client.TokenValid(ctx) {
-		p.log.Info("gobiz login required", "method", p.cfg.LoginMethod)
-		if err := p.login(ctx); err != nil {
+		p.log.Info("gobiz access token invalid; attempting refresh")
+		if err := p.refresh(ctx); err != nil {
 			return err
 		}
 	}
@@ -116,51 +124,37 @@ func (p *Provider) ensureSession(ctx context.Context) error {
 		p.log.Info("gobiz merchant resolved", "merchant_id", id)
 	}
 
-	return p.store.Save(tokenCache{
-		AccessToken: p.client.Token(),
-		MerchantID:  p.client.MerchantID(),
-	})
+	return p.persistLocked(ctx)
 }
 
-func (p *Provider) login(ctx context.Context) error {
-	method := strings.ToLower(p.cfg.LoginMethod)
-	if method == "" {
-		method = "password"
+func (p *Provider) refresh(ctx context.Context) error {
+	rt := p.client.RefreshToken()
+	if rt == "" {
+		rt = p.cfg.RefreshToken
 	}
-	switch method {
-	case "token":
-		if p.cfg.AccessToken == "" {
-			return fmt.Errorf("GOBIZ_ACCESS_TOKEN required for login method token")
-		}
-		p.client.SetToken(p.cfg.AccessToken)
-		return nil
-	case "password":
-		if p.cfg.Email == "" || p.cfg.Password == "" {
-			return fmt.Errorf("GOBIZ_EMAIL and GOBIZ_PASSWORD required")
-		}
-		return p.client.LoginPassword(ctx, p.cfg.Email, p.cfg.Password)
-	case "otp":
-		if p.cfg.Phone == "" {
-			return fmt.Errorf("GOBIZ_PHONE required for otp login")
-		}
-		otpToken, err := p.client.LoginOTPRequest(ctx, p.cfg.Phone)
-		if err != nil {
-			return err
-		}
-		otp := strings.TrimSpace(os.Getenv("GOBIZ_OTP"))
-		if otp == "" {
-			fmt.Fprintf(os.Stderr, "Enter GoBiz OTP for %s: ", p.cfg.Phone)
-			line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-			if err != nil {
-				return err
-			}
-			otp = strings.TrimSpace(line)
-		}
-		if otp == "" {
-			return fmt.Errorf("empty OTP")
-		}
-		return p.client.LoginOTPVerify(ctx, p.cfg.Phone, otp, otpToken)
-	default:
-		return fmt.Errorf("unknown GOBIZ_LOGIN_METHOD %q", method)
+	if rt == "" {
+		return fmt.Errorf("%w: access token expired and no refresh token; re-verify credentials", domain.ErrAuthFatal)
 	}
+	if err := p.client.RefreshAccessToken(ctx, rt); err != nil {
+		return err
+	}
+	p.log.Info("gobiz token refreshed")
+	return nil
+}
+
+func (p *Provider) persistLocked(ctx context.Context) error {
+	access := p.client.Token()
+	refresh := p.client.RefreshToken()
+	merchant := p.client.MerchantID()
+	_ = p.store.Save(tokenCache{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		MerchantID:   merchant,
+	})
+	if p.cfg.SaveSession != nil {
+		if err := p.cfg.SaveSession(ctx, access, refresh, merchant); err != nil {
+			p.log.Warn("persist gobiz session failed", "err", err)
+		}
+	}
+	return nil
 }

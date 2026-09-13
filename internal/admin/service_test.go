@@ -26,6 +26,7 @@ func (m *memStore) Create(ctx context.Context, t *domain.Tenant) error {
 		t.ID = "t1"
 	}
 	cp := *t
+	cp.Password = ""
 	m.byID[t.ID] = &cp
 	return nil
 }
@@ -50,6 +51,7 @@ func (m *memStore) Update(ctx context.Context, t *domain.Tenant) error {
 		return domain.ErrNotFound
 	}
 	cp := *t
+	cp.Password = ""
 	m.byID[t.ID] = &cp
 	return nil
 }
@@ -61,8 +63,16 @@ func (m *memStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func TestCreateTenant_defaultsDisabled(t *testing.T) {
-	svc := admin.NewService(&memStore{})
+func okVerifier(ctx context.Context, email, password string) (admin.AuthSession, error) {
+	if email == "" || password == "" {
+		return admin.AuthSession{}, domain.ErrInvalidInput
+	}
+	return admin.AuthSession{AccessToken: "atk", RefreshToken: "rtk", MerchantID: "G123"}, nil
+}
+
+func TestCreateTenant_exchangesPasswordForTokens(t *testing.T) {
+	store := &memStore{}
+	svc := admin.NewService(store).WithPasswordVerifier(okVerifier)
 	out, err := svc.Create(context.Background(), admin.CreateTenantInput{
 		AppID: "app-1", Name: "Shop",
 		Gobiz: &admin.GobizInput{LoginMethod: "password", Email: "a@b.c", Password: "secret"},
@@ -70,77 +80,55 @@ func TestCreateTenant_defaultsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Enabled {
-		t.Fatal("new tenants must be disabled until explicitly enabled")
-	}
-	if out.AppID != "app-1" || !out.HasPassword || out.Email != "a@b.c" {
+	if out.Enabled || out.HasPassword || !out.HasToken || !out.HasRefresh || out.LoginMethod != "token" {
 		t.Fatalf("%+v", out)
+	}
+	got, _ := store.GetByID(context.Background(), out.ID)
+	if got.Password != "" || got.AccessToken != "atk" || got.RefreshToken != "rtk" {
+		t.Fatalf("%+v", got)
 	}
 }
 
-func TestUpdateGobiz_disablesPolling(t *testing.T) {
+func TestUpdateGobiz_disablesAndClearsPassword(t *testing.T) {
 	store := &memStore{}
-	svc := admin.NewService(store)
+	svc := admin.NewService(store).WithPasswordVerifier(okVerifier)
 	en := true
 	created, err := svc.Create(context.Background(), admin.CreateTenantInput{
 		AppID: "app-1", Enabled: &en,
-		Gobiz: &admin.GobizInput{LoginMethod: "password", Email: "a@b.c", Password: "secret"},
+		Gobiz: &admin.GobizInput{Email: "a@b.c", Password: "secret"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := svc.Update(context.Background(), created.ID, admin.UpdateTenantInput{
-		Gobiz: &admin.GobizInput{Password: "new-secret"},
+		Gobiz: &admin.GobizInput{Email: "a@b.c", Password: "new-secret"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Enabled {
-		t.Fatal("credential change must disable tenant")
+	if out.Enabled || out.HasPassword {
+		t.Fatalf("%+v", out)
 	}
 }
 
 func TestVerify_ok(t *testing.T) {
-	svc := admin.NewService(&memStore{}).WithPasswordVerifier(func(ctx context.Context, email, password string) (string, error) {
-		if email != "a@b.c" || password != "secret" {
-			return "", errors.Join(domain.ErrAuthFatal, errors.New("bad"))
-		}
-		return "G123", nil
-	})
+	svc := admin.NewService(&memStore{}).WithPasswordVerifier(okVerifier)
 	out, err := svc.Verify(context.Background(), admin.VerifyInput{
 		Gobiz: &admin.GobizInput{LoginMethod: "password", Email: "a@b.c", Password: "secret"},
 	})
-	if err != nil || !out.OK || out.MerchantID != "G123" {
+	if err != nil || !out.OK || out.MerchantID != "G123" || !out.HasRefresh {
 		t.Fatalf("out=%+v err=%v", out, err)
 	}
 }
 
 func TestVerify_authFail(t *testing.T) {
-	svc := admin.NewService(&memStore{}).WithPasswordVerifier(func(ctx context.Context, email, password string) (string, error) {
-		return "", errors.Join(domain.ErrAuthFatal, errors.New("gobiz password login failed: diblok"))
+	svc := admin.NewService(&memStore{}).WithPasswordVerifier(func(ctx context.Context, email, password string) (admin.AuthSession, error) {
+		return admin.AuthSession{}, errors.Join(domain.ErrAuthFatal, errors.New("gobiz password login failed: diblok"))
 	})
 	_, err := svc.Verify(context.Background(), admin.VerifyInput{
 		Gobiz: &admin.GobizInput{Email: "a@b.c", Password: "x"},
 	})
 	if !errors.Is(err, domain.ErrAuthFatal) {
 		t.Fatalf("err=%v", err)
-	}
-}
-
-func TestVerifyTenant_usesStored(t *testing.T) {
-	store := &memStore{}
-	svc := admin.NewService(store).WithPasswordVerifier(func(ctx context.Context, email, password string) (string, error) {
-		return "G9", nil
-	})
-	created, err := svc.Create(context.Background(), admin.CreateTenantInput{
-		AppID: "app-1",
-		Gobiz: &admin.GobizInput{LoginMethod: "password", Email: "a@b.c", Password: "secret"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := svc.VerifyTenant(context.Background(), created.ID)
-	if err != nil || !out.OK || out.MerchantID != "G9" {
-		t.Fatalf("out=%+v err=%v", out, err)
 	}
 }

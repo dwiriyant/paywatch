@@ -20,7 +20,7 @@ func NewTenantRepository(pool *pgxpool.Pool) *TenantRepository {
 	return &TenantRepository{pool: pool}
 }
 
-const tenantCols = `id, app_id, name, provider, enabled, login_method, email, password, phone, access_token, merchant_id, created_at, updated_at`
+const tenantCols = `id, app_id, name, provider, enabled, login_method, email, password, phone, access_token, refresh_token, merchant_id, created_at, updated_at`
 
 func (r *TenantRepository) Create(ctx context.Context, t *domain.Tenant) error {
 	if t.ID == "" {
@@ -29,11 +29,12 @@ func (r *TenantRepository) Create(ctx context.Context, t *domain.Tenant) error {
 	now := time.Now().UTC()
 	t.CreatedAt = now
 	t.UpdatedAt = now
+	t.Password = "" // never persist passwords
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO tenants (
-			id, app_id, name, provider, enabled, login_method, email, password, phone, access_token, merchant_id, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		t.ID, t.AppID, t.Name, t.Provider, t.Enabled, t.LoginMethod, t.Email, t.Password, t.Phone, t.AccessToken, t.MerchantID, t.CreatedAt, t.UpdatedAt,
+			id, app_id, name, provider, enabled, login_method, email, password, phone, access_token, refresh_token, merchant_id, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		t.ID, t.AppID, t.Name, t.Provider, t.Enabled, t.LoginMethod, t.Email, t.Password, t.Phone, t.AccessToken, t.RefreshToken, t.MerchantID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -88,13 +89,14 @@ func (r *TenantRepository) ListEnabled(ctx context.Context) ([]*domain.Tenant, e
 
 func (r *TenantRepository) Update(ctx context.Context, t *domain.Tenant) error {
 	t.UpdatedAt = time.Now().UTC()
+	t.Password = "" // never persist passwords
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE tenants SET
 			name = $2, provider = $3, enabled = $4, login_method = $5,
-			email = $6, password = $7, phone = $8, access_token = $9, merchant_id = $10, updated_at = $11
+			email = $6, password = $7, phone = $8, access_token = $9, refresh_token = $10, merchant_id = $11, updated_at = $12
 		WHERE id = $1`,
 		t.ID, t.Name, t.Provider, t.Enabled, t.LoginMethod,
-		t.Email, t.Password, t.Phone, t.AccessToken, t.MerchantID, t.UpdatedAt,
+		t.Email, t.Password, t.Phone, t.AccessToken, t.RefreshToken, t.MerchantID, t.UpdatedAt,
 	)
 	if err != nil {
 		return err
@@ -124,7 +126,7 @@ func scanTenant(row scanner) (*domain.Tenant, error) {
 	var t domain.Tenant
 	err := row.Scan(
 		&t.ID, &t.AppID, &t.Name, &t.Provider, &t.Enabled, &t.LoginMethod,
-		&t.Email, &t.Password, &t.Phone, &t.AccessToken, &t.MerchantID, &t.CreatedAt, &t.UpdatedAt,
+		&t.Email, &t.Password, &t.Phone, &t.AccessToken, &t.RefreshToken, &t.MerchantID, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
