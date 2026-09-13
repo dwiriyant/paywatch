@@ -67,15 +67,17 @@ curl -s -X PATCH http://localhost:8081/v1/tenants/$TENANT_ID \
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/healthz` | — | Liveness |
-| POST | `/v1/tenants/verify` | Bearer admin | Live-check GoBiz email/password (or token) |
+| POST | `/v1/tenants/verify` | Bearer admin | Live-check GoBiz email/password (or token); rate-limited |
 | POST | `/v1/tenants` | Bearer admin | Register tenant (**disabled by default**) |
 | GET | `/v1/tenants` | Bearer admin | List (secrets masked) |
 | GET | `/v1/tenants/:id` | Bearer admin | Get one |
 | PATCH | `/v1/tenants/:id` | Bearer admin | Update / enable / disable |
-| POST | `/v1/tenants/:id/verify` | Bearer admin | Live-check stored credentials |
+| POST | `/v1/tenants/:id/verify` | Bearer admin | Live-check stored credentials; rate-limited |
 | DELETE | `/v1/tenants/:id` | Bearer admin | Delete |
 
 New tenants and credential updates stay **disabled** until you set `"enabled": true`. Enabled tenants are picked up on the next poll cycle (no restart).
+
+Verify endpoints share a per-IP rate limit (`VERIFY_RATE_LIMIT_PER_MIN`, default **1**/min) and return `429` when exceeded.
 
 ## Docker Hub
 

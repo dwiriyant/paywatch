@@ -22,6 +22,9 @@ type Config struct {
 	GobizHistorySize int
 	CacheDir         string
 	SeenStatePath    string
+
+	// VerifyRateLimitPerMin caps live GoBiz credential checks (spam / lockout risk).
+	VerifyRateLimitPerMin int
 }
 
 func Load() (Config, error) {
@@ -35,8 +38,9 @@ func Load() (Config, error) {
 		QRISGateAdminToken: os.Getenv("QRISGATE_ADMIN_TOKEN"),
 		GobizHistoryDays:   getenvInt("GOBIZ_HISTORY_DAYS", 1),
 		GobizHistorySize:   getenvInt("GOBIZ_HISTORY_SIZE", 30),
-		CacheDir:           getenv("CACHE_DIR", ".cache"),
-		SeenStatePath:      getenv("SEEN_STATE_PATH", ".paywatch_seen.json"),
+		CacheDir:              getenv("CACHE_DIR", ".cache"),
+		SeenStatePath:         getenv("SEEN_STATE_PATH", ".paywatch_seen.json"),
+		VerifyRateLimitPerMin: getenvInt("VERIFY_RATE_LIMIT_PER_MIN", 1),
 	}
 	if cfg.PollInterval < 5*time.Second {
 		return cfg, fmt.Errorf("POLL_INTERVAL_MS must be >= 5000 (ban risk)")

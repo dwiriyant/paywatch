@@ -19,6 +19,9 @@ func TestLoad_ok(t *testing.T) {
 	if cfg.PollInterval != 6*time.Second || cfg.Addr == "" {
 		t.Fatalf("%+v", cfg)
 	}
+	if cfg.VerifyRateLimitPerMin != 1 {
+		t.Fatalf("verify rate default=%d", cfg.VerifyRateLimitPerMin)
+	}
 }
 
 func TestLoad_requiresAdmin(t *testing.T) {

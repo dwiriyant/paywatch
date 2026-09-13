@@ -26,6 +26,10 @@ func Unauthorized(c echo.Context) error {
 	return c.JSON(http.StatusUnauthorized, ErrorBody{Error: "unauthorized"})
 }
 
+func TooManyRequests(c echo.Context) error {
+	return c.JSON(http.StatusTooManyRequests, ErrorBody{Error: "rate limit exceeded"})
+}
+
 func NotFound(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, ErrorBody{Error: "not found"})
 }
