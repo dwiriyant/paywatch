@@ -116,8 +116,38 @@ func TestVerify_ok(t *testing.T) {
 	out, err := svc.Verify(context.Background(), admin.VerifyInput{
 		Gobiz: &admin.GobizInput{LoginMethod: "password", Email: "a@b.c", Password: "secret"},
 	})
-	if err != nil || !out.OK || out.MerchantID != "G123" || !out.HasRefresh {
+	if err != nil || !out.OK || out.MerchantID != "G123" || !out.HasRefresh || out.SaveWindowSec != 60 {
 		t.Fatalf("out=%+v err=%v", out, err)
+	}
+}
+
+func TestVerifyThenCreate_usesPendingCache(t *testing.T) {
+	store := &memStore{}
+	var live int
+	svc := admin.NewService(store).WithPasswordVerifier(func(ctx context.Context, email, password string) (admin.AuthSession, error) {
+		live++
+		return admin.AuthSession{AccessToken: "atk", RefreshToken: "rtk", MerchantID: "G1"}, nil
+	})
+	if _, err := svc.Verify(context.Background(), admin.VerifyInput{
+		Gobiz: &admin.GobizInput{Email: "a@b.c", Password: "secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 {
+		t.Fatalf("live=%d", live)
+	}
+	out, err := svc.Create(context.Background(), admin.CreateTenantInput{
+		AppID: "app-1",
+		Gobiz: &admin.GobizInput{Email: "a@b.c", Password: "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 {
+		t.Fatalf("create must reuse pending session, live=%d", live)
+	}
+	if !out.HasToken || out.MerchantID != "G1" {
+		t.Fatalf("%+v", out)
 	}
 }
 

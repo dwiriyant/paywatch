@@ -32,10 +32,15 @@ type Service struct {
 	tenants        TenantStore
 	gate           *tenant.AuthGate
 	verifyPassword PasswordVerifier
+	pending        *pendingSessions
 }
 
 func NewService(tenants TenantStore) *Service {
-	return &Service{tenants: tenants, verifyPassword: liveVerifyPassword}
+	return &Service{
+		tenants:        tenants,
+		verifyPassword: liveVerifyPassword,
+		pending:        newPendingSessions(),
+	}
 }
 
 func (s *Service) WithAuthGate(gate *tenant.AuthGate) *Service {
@@ -81,11 +86,12 @@ type VerifyInput struct {
 }
 
 type VerifyResult struct {
-	OK         bool   `json:"ok"`
-	MerchantID string `json:"merchant_id,omitempty"`
-	HasToken   bool   `json:"has_access_token,omitempty"`
-	HasRefresh bool   `json:"has_refresh_token,omitempty"`
-	Message    string `json:"message,omitempty"`
+	OK               bool   `json:"ok"`
+	MerchantID       string `json:"merchant_id,omitempty"`
+	HasToken         bool   `json:"has_access_token,omitempty"`
+	HasRefresh       bool   `json:"has_refresh_token,omitempty"`
+	SaveWindowSec    int    `json:"save_window_sec,omitempty"` // create/update with same password within this many seconds skips re-login
+	Message          string `json:"message,omitempty"`
 }
 
 type TenantView struct {
@@ -281,9 +287,11 @@ func (s *Service) verifyGobizSession(ctx context.Context, g *GobizInput) (AuthSe
 		if err != nil {
 			return AuthSession{}, nil, err
 		}
+		s.pending.Put(g.Email, g.Password, sess)
 		return sess, &VerifyResult{
-			OK: true, MerchantID: sess.MerchantID, Message: "credentials ok",
+			OK: true, MerchantID: sess.MerchantID, Message: "credentials ok; save tenant within 60s to skip re-login",
 			HasToken: sess.AccessToken != "", HasRefresh: sess.RefreshToken != "",
+			SaveWindowSec: int(pendingSessionTTL.Seconds()),
 		}, nil
 	case "token":
 		if g.AccessToken == "" && g.RefreshToken == "" {
@@ -319,9 +327,15 @@ func (s *Service) applyGobizSession(ctx context.Context, t *domain.Tenant, g *Go
 		if g.Email == "" {
 			return domain.ErrInvalidInput
 		}
-		sess, err := s.verifyPassword(ctx, g.Email, g.Password)
-		if err != nil {
-			return err
+		sess, ok := s.pending.Get(g.Email, g.Password)
+		if !ok {
+			var err error
+			sess, err = s.verifyPassword(ctx, g.Email, g.Password)
+			if err != nil {
+				return err
+			}
+		} else {
+			s.pending.Clear(g.Email, g.Password)
 		}
 		t.AccessToken = sess.AccessToken
 		t.RefreshToken = sess.RefreshToken
