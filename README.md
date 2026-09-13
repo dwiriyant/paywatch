@@ -86,7 +86,7 @@ Verify endpoints share a per-IP rate limit (`VERIFY_RATE_LIMIT_PER_MIN`, default
 Image: `dwiriyant/paywatch` — see Releases. Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 ```bash
-export PAYWATCH_TAG=0.1.0 ADMIN_TOKEN=… QRISGATE_ADMIN_TOKEN=…
+export PAYWATCH_TAG=0.1.5 ADMIN_TOKEN=… QRISGATE_ADMIN_TOKEN=…
 make docker-hub-up
 ```
 
